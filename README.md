@@ -47,6 +47,9 @@ SynapsVault-contracts  (Soroban — vault-registry, access-lease, subscription)
 
 ## Quick start
 
+If you use nvm, see [Selecting a Node version with nvm](./docs/tooling-nvm.md)
+to install and select the version recorded in `.nvmrc` first.
+
 ```bash
 # Prerequisites: Node 24.15+
 git clone https://github.com/SynapsVault/frontend SynapsVault-frontend

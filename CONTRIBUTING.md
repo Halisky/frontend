@@ -8,8 +8,9 @@ A Stellar-powered marketplace UI built with React, TypeScript, Vite, and Tailwin
 - Node.js >=24.15.0 (see `engines` in `package.json`)
 - npm (or pnpm)
 
-The repo pins its Node version in `.nvmrc`. If you use nvm, run `nvm use` from the
-project root to switch to the pinned Node 24 release before installing dependencies.
+The repo records its Node version in `.nvmrc`. If you use nvm, see
+[Selecting a Node version with nvm](./docs/tooling-nvm.md) for how to install
+that version and switch to it with `nvm use` before installing dependencies.
 
 ### Setup
 

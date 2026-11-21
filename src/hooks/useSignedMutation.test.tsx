@@ -15,6 +15,10 @@ vi.mock("./useNetworkCheck.js", () => ({
 const mockedSignWithFreighter = vi.mocked(signWithFreighter);
 const mockedCheckNetwork = vi.mocked(checkNetwork);
 
+const PREPARED = { unsignedXdr: "prepared-xdr", networkPassphrase: "testnet-pass" };
+const SIGNED_XDR = "signed-xdr";
+const PARAMS = "price-param";
+
 describe("useSignedMutation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -26,19 +30,18 @@ describe("useSignedMutation", () => {
   });
 
   it("completes a successful prepare/sign/submit flow with a shared idempotency key", async () => {
-    const prepare = vi.fn().mockResolvedValue({ xdr: "prepared-xdr" });
+    const prepare = vi.fn().mockResolvedValue(PREPARED);
     const submit = vi.fn().mockResolvedValue({ hash: "tx-hash" });
-    const signedXdr = "signed-xdr";
-    mockedSignWithFreighter.mockResolvedValue(signedXdr);
+    mockedSignWithFreighter.mockResolvedValue(SIGNED_XDR);
 
     const { result } = renderHook(() =>
-      useSignedMutation({ prepare, submit }),
+      useSignedMutation<string, { hash: string }>({ prepare, submit }),
     );
 
     expect(result.current.status).toBe("idle");
 
     await act(async () => {
-      await result.current.mutate();
+      await result.current.execute(PARAMS);
     });
 
     await waitFor(() => {
@@ -47,18 +50,65 @@ describe("useSignedMutation", () => {
 
     expect(result.current.result).toEqual({ hash: "tx-hash" });
     expect(result.current.error).toBeNull();
+    expect(result.current.networkWarning).toBeNull();
 
     expect(prepare).toHaveBeenCalledTimes(1);
+    expect(prepare).toHaveBeenCalledWith(PARAMS, expect.any(String));
+    expect(mockedCheckNetwork).toHaveBeenCalledWith("testnet-pass");
     expect(mockedSignWithFreighter).toHaveBeenCalledTimes(1);
+    expect(mockedSignWithFreighter).toHaveBeenCalledWith(
+      "prepared-xdr",
+      "testnet-pass",
+    );
     expect(submit).toHaveBeenCalledTimes(1);
 
-    const prepareArgs = prepare.mock.calls[0][0];
-    const submitArgs = submit.mock.calls[0][0];
+    const prepareKey = prepare.mock.calls[0][1];
+    const submitArgs = submit.mock.calls[0];
+    expect(submitArgs[0]).toBe(PARAMS);
+    expect(submitArgs[1]).toBe(SIGNED_XDR);
+    expect(submitArgs[2]).toBe(prepareKey);
+  });
 
-    expect(prepareArgs.idempotencyKey).toBeDefined();
-    expect(submitArgs.idempotencyKey).toBeDefined();
-    expect(submitArgs.idempotencyKey).toBe(prepareArgs.idempotencyKey);
-    expect(submitArgs.signedXdr).toBe(signedXdr);
+  it("warns and skips signing on network mismatch, then completes on a corrected retry", async () => {
+    const warning =
+      "Network mismatch: your wallet is on a different network. Switch Freighter to Stellar Testnet before signing.";
+    mockedCheckNetwork.mockResolvedValueOnce(warning);
+
+    const prepare = vi.fn().mockResolvedValue(PREPARED);
+    const submit = vi.fn().mockResolvedValue({ hash: "tx-hash" });
+    mockedSignWithFreighter.mockResolvedValue(SIGNED_XDR);
+
+    const { result } = renderHook(() =>
+      useSignedMutation<string, { hash: string }>({ prepare, submit }),
+    );
+
+    // First attempt: wallet on the wrong network.
+    await act(async () => {
+      await result.current.execute(PARAMS);
+    });
+
+    await waitFor(() => {
+      expect(result.current.networkWarning).toBe(warning);
+    });
+    expect(result.current.status).toBe("idle");
+    expect(result.current.error).toBeNull();
+    expect(mockedSignWithFreighter).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+
+    // Second attempt: user switched networks; warning clears and flow completes.
+    await act(async () => {
+      await result.current.execute(PARAMS);
+    });
+
+    await waitFor(() => {
+      expect(result.current.status).toBe("confirmed");
+    });
+
+    expect(result.current.networkWarning).toBeNull();
+    expect(result.current.result).toEqual({ hash: "tx-hash" });
+    expect(mockedCheckNetwork).toHaveBeenCalledTimes(2);
+    expect(mockedSignWithFreighter).toHaveBeenCalledTimes(1);
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 
   describe("rejection boundaries", () => {
@@ -73,14 +123,11 @@ describe("useSignedMutation", () => {
           return { prepare, submit };
         },
         expectedMessage: "prepare failed",
-        assertSkipped: () => {
-          expect(mockedSignWithFreighter).not.toHaveBeenCalled();
-        },
       },
       {
         name: "signing rejects",
         setup: () => {
-          const prepare = vi.fn().mockResolvedValue({ xdr: "prepared-xdr" });
+          const prepare = vi.fn().mockResolvedValue(PREPARED);
           const submit = vi.fn().mockResolvedValue({ hash: "tx-hash" });
           mockedSignWithFreighter.mockRejectedValue(
             new Error("signing failed"),
@@ -88,32 +135,26 @@ describe("useSignedMutation", () => {
           return { prepare, submit };
         },
         expectedMessage: "signing failed",
-        assertSkipped: () => {
-          // submit is captured per-case below via closure
-        },
       },
       {
         name: "submit rejects",
         setup: () => {
-          const prepare = vi.fn().mockResolvedValue({ xdr: "prepared-xdr" });
+          const prepare = vi.fn().mockResolvedValue(PREPARED);
           const submit = vi.fn().mockRejectedValue(new Error("submit failed"));
-          mockedSignWithFreighter.mockResolvedValue("signed-xdr");
+          mockedSignWithFreighter.mockResolvedValue(SIGNED_XDR);
           return { prepare, submit };
         },
         expectedMessage: "submit failed",
-        assertSkipped: () => {
-          // submit was attempted; nothing downstream to skip
-        },
       },
     ])("sets error state when $name", async ({ setup, expectedMessage }) => {
       const { prepare, submit } = setup();
 
       const { result } = renderHook(() =>
-        useSignedMutation({ prepare, submit }),
+        useSignedMutation<string, { hash: string }>({ prepare, submit }),
       );
 
       await act(async () => {
-        await result.current.mutate();
+        await result.current.execute(PARAMS);
       });
 
       await waitFor(() => {
@@ -124,6 +165,7 @@ describe("useSignedMutation", () => {
       expect(result.current.result).toBeNull();
 
       if (expectedMessage === "prepare failed") {
+        expect(mockedCheckNetwork).not.toHaveBeenCalled();
         expect(mockedSignWithFreighter).not.toHaveBeenCalled();
         expect(submit).not.toHaveBeenCalled();
       }
